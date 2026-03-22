@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Future Task System</title>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: radial-gradient(circle at top, #0a0f1f, #02040a);
+      color: #00f7ff;
+    }
+
+    .container {
+      padding: 20px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    h1, h2 {
+      text-align: center;
+      text-shadow: 0 0 10px #00f7ff;
+    }
+
+    input, textarea, select {
+      box-sizing: border-box;
+      background: #02040a;
+      border: 1px solid #00f7ff;
+      color: #00f7ff;
+      padding: 10px;
+      border-radius: 8px;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    button {
+      background: transparent;
+      border: 1px solid #00f7ff;
+      color: #00f7ff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+
+    button:hover {
+      background: #00f7ff;
+      color: black;
+    }
+
+    .task {
+      border: 1px solid #00f7ff33;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      background: rgba(0, 247, 255, 0.03);
+    }
+
+    .hidden { display: none; }
+
+    .star {
+      cursor: pointer;
+      font-size: 22px;
+      margin-right: 3px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .small {
+      opacity: 0.85;
+      font-size: 14px;
+    }
+
+    .danger {
+      border-color: #ff5c5c;
+      color: #ff5c5c;
+    }
+
+    .danger:hover {
+      background: #ff5c5c;
+      color: black;
+    }
+
+    .success { color: #7dffb3; }
+    .error { color: #ff8c8c; }
+  </style>
+</head>
+<body>
+
+  <div class="container" id="authBox">
+    <h1>Přihlášení / Registrace</h1>
+
+    <input id="username" placeholder="Přihlašovací jméno" />
+    <input id="password" type="password" placeholder="Heslo" />
+    <select id="role">
+      <option value="giver">Zadavatel práce</option>
+      <option value="worker">Pracovník</option>
+    </select>
+
+    <button id="registerBtn">Registrovat</button>
+    <button id="loginBtn">Přihlásit</button>
+
+    <p id="authMessage" class="small"></p>
+  </div>
+
+  <div class="container hidden" id="appBox">
+    <div class="topbar">
+      <div>
+        <h1 id="welcome" style="margin:0; text-align:left;"></h1>
+        <div id="userInfo" class="small"></div>
+      </div>
+      <div>
+        <button id="logoutBtn" class="danger">Odhlásit</button>
+      </div>
+    </div>
+
+    <div id="giverUI" class="hidden">
+      <h2>Přidat práci</h2>
+      <input id="taskName" placeholder="Název práce" />
+      <textarea id="taskDesc" placeholder="Popis"></textarea>
+      <input id="taskPrice" placeholder="Odměna" />
+      <textarea id="taskSecret" placeholder="Tajné info"></textarea>
+      <button id="addTaskBtn">Přidat</button>
+    </div>
+
+    <div id="workerUI" class="hidden">
+      <h2>Dostupné práce</h2>
+    </div>
+
+    <div id="taskList"></div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+    import {
+      getAuth,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      signOut,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-auth.js";
+    import {
+      getFirestore,
+      doc,
+      setDoc,
+      getDoc,
+      addDoc,
+      collection,
+      onSnapshot,
+      updateDoc,
+      deleteDoc,
+      serverTimestamp,
+      query,
+      orderBy
+    } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "SEM_API_KEY",
+      authDomain: "SEM_AUTH_DOMAIN",
+      projectId: "SEM_PROJECT_ID",
+      storageBucket: "SEM_STORAGE_BUCKET",
+      messagingSenderId: "SEM_MESSAGING_SENDER_ID",
+      appId: "SEM_APP_ID"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    let currentUser = null;
+    let unsubscribeTasks = null;
+
+    const authBox = document.getElementById("authBox");
+    const appBox = document.getElementById("appBox");
+    const authMessage = document.getElementById("authMessage");
+    const welcome = document.getElementById("welcome");
+    const userInfo = document.getElementById("userInfo");
+    const taskList = document.getElementById("taskList");
+    const giverUI = document.getElementById("giverUI");
+    const workerUI = document.getElementById("workerUI");
+
+    document.getElementById("registerBtn").addEventListener("click", registerUser);
+    document.getElementById("loginBtn").addEventListener("click", loginUser);
+    document.getElementById("logoutBtn").addEventListener("click", logoutUser);
+    document.getElementById("addTaskBtn").addEventListener("click", addTask);
+
+    function showMessage(text, type = "") {
+      authMessage.className = `small ${type}`;
+      authMessage.textContent = text;
+    }
+
+    function normalizeUsername(username) {
+      return username.trim().toLowerCase();
+    }
+
+    function usernameToEmail(username) {
+      // interní převod jména na "fake" email pro Firebase Auth
+      const clean = normalizeUsername(username)
+        .replace(/\s+/g, "")
+        .replace(/[^a-z0-9._-]/g, "");
+      return `${clean}@futuretask.local`;
+    }
+
+    async function registerUser() {
+      const usernameRaw = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+      const role = document.getElementById("role").value;
+
+      if (!usernameRaw || !password) {
+        showMessage("Vyplň přihlašovací jméno a heslo.", "error");
+        return;
+      }
+
+      const username = normalizeUsername(usernameRaw);
+      const email = usernameToEmail(username);
+
+      if (username.length < 3) {
+        showMessage("Přihlašovací jméno musí mít alespoň 3 znaky.", "error");
+        return;
+      }
+
+      if (password.length < 6) {
+        showMessage("Heslo musí mít alespoň 6 znaků.", "error");
+        return;
+      }
+
+      try {
+        // kontrola, jestli už přezdívka neexistuje
+        const usernameDoc = await getDoc(doc(db, "usernames", username));
+        if (usernameDoc.exists()) {
+          showMessage("Toto přihlašovací jméno už existuje.", "error");
+          return;
+        }
+
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+
+        await setDoc(doc(db, "users", cred.user.uid), {
+          username,
+          role,
+          internalEmail: email,
+          createdAt: serverTimestamp()
+        });
+
+        await setDoc(doc(db, "usernames", username), {
+          uid: cred.user.uid,
+          createdAt: serverTimestamp()
+        });
+
+        showMessage("Registrace proběhla úspěšně.", "success");
+      } catch (error) {
+        showMessage("Chyba registrace: " + error.message, "error");
+      }
+    }
+
+    async function loginUser() {
+      const usernameRaw = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+
+      if (!usernameRaw || !password) {
+        showMessage("Zadej přihlašovací jméno a heslo.", "error");
+        return;
+      }
+
+      const email = usernameToEmail(usernameRaw);
+
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        showMessage("Přihlášení proběhlo úspěšně.", "success");
+      } catch (error) {
+        showMessage("Chyba přihlášení: " + error.message, "error");
+      }
+    }
+
+    async function logoutUser() {
+      try {
+        if (unsubscribeTasks) {
+          unsubscribeTasks();
+          unsubscribeTasks = null;
+        }
+        await signOut(auth);
+      } catch (error) {
+        alert("Chyba při odhlášení: " + error.message);
+      }
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        currentUser = null;
+        authBox.classList.remove("hidden");
+        appBox.classList.add("hidden");
+        giverUI.classList.add("hidden");
+        workerUI.classList.add("hidden");
+        taskList.innerHTML = "";
+        welcome.textContent = "";
+        userInfo.textContent = "";
+        return;
+      }
+
+      try {
+        const userSnap = await getDoc(doc(db, "users", user.uid));
+
+        if (!userSnap.exists()) {
+          alert("Profil uživatele nebyl nalezen.");
+          await signOut(auth);
+          return;
+        }
+
+        currentUser = {
+          uid: user.uid,
+          ...userSnap.data()
+        };
+
+        authBox.classList.add("hidden");
+        appBox.classList.remove("hidden");
+
+        welcome.textContent = "Uživatel: " + currentUser.username;
+        userInfo.textContent = `Role: ${currentUser.role}`;
+
+        giverUI.classList.add("hidden");
+        workerUI.classList.add("hidden");
+
+        if (currentUser.role === "giver") {
+          giverUI.classList.remove("hidden");
+        } else {
+          workerUI.classList.remove("hidden");
+        }
+
+        listenTasks();
+      } catch (error) {
+        alert("Chyba načítání profilu: " + error.message);
+      }
+    });
+
+    async function addTask() {
+      if (!currentUser || currentUser.role !== "giver") return;
+
+      const name = document.getElementById("taskName").value.trim();
+      const desc = document.getElementById("taskDesc").value.trim();
+      const price = document.getElementById("taskPrice").value.trim();
+      const secret = document.getElementById("taskSecret").value.trim();
+
+      if (!name || !desc || !price) {
+        alert("Vyplň název, popis a odměnu.");
+        return;
+      }
+
+      try {
+        await addDoc(collection(db, "tasks"), {
+          name,
+          desc,
+          price,
+          secret,
+          createdByUid: currentUser.uid,
+          createdByName: currentUser.username,
+          takenByUid: null,
+          takenByName: null,
+          rating: 0,
+          createdAt: serverTimestamp()
+        });
+
+        document.getElementById("taskName").value = "";
+        document.getElementById("taskDesc").value = "";
+        document.getElementById("taskPrice").value = "";
+        document.getElementById("taskSecret").value = "";
+      } catch (error) {
+        alert("Chyba při ukládání úkolu: " + error.message);
+      }
+    }
+
+    function listenTasks() {
+      if (unsubscribeTasks) unsubscribeTasks();
+
+      const q = query(collection(db, "tasks"), orderBy("createdAt", "desc"));
+
+      unsubscribeTasks = onSnapshot(q, (snapshot) => {
+        const tasks = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        }));
+        renderTasks(tasks);
+      }, (error) => {
+        taskList.innerHTML = `<p class="error">Chyba načítání úkolů: ${error.message}</p>`;
+      });
+    }
+
+    function renderTasks(tasks) {
+      taskList.innerHTML = "";
+      let renderedCount = 0;
+
+      if (!tasks.length) {
+        taskList.innerHTML = `<p class="small">Zatím tu nejsou žádné práce.</p>`;
+        return;
+      }
+
+      tasks.forEach((t) => {
+        const div = document.createElement("div");
+        div.className = "task";
+
+        if (currentUser.role === "giver") {
+          if (t.createdByUid !== currentUser.uid) return;
+
+          div.innerHTML = `
+            <strong>${escapeHtml(t.name)}</strong><br>
+            Popis: ${escapeHtml(t.desc)}<br>
+            Odměna: ${escapeHtml(t.price)}<br>
+            Přijal: ${t.takenByName ? escapeHtml(t.takenByName) : "nikdo"}<br><br>
+            ${t.takenByName ? renderStars(t.id, t.rating || 0) : '<span class="small">Ještě nikdo nepřijal</span>'}
+          `;
+        } else {
+          if (t.takenByUid && t.takenByUid !== currentUser.uid) return;
+
+          if (t.takenByUid === currentUser.uid) {
+            div.innerHTML = `
+              <strong>${escapeHtml(t.name)}</strong><br>
+              Odměna: ${escapeHtml(t.price)}<br>
+              <p>${escapeHtml(t.desc)}</p>
+              <p><strong>Tajné info:</strong> ${escapeHtml(t.secret || "žádné")}</p>
+              <button class="danger" data-action="leave" data-id="${t.id}">Zrušit přijetí</button>
+            `;
+          } else {
+            div.innerHTML = `
+              <strong>${escapeHtml(t.name)}</strong><br>
+              Odměna: ${escapeHtml(t.price)}<br><br>
+              <button data-action="take" data-id="${t.id}">Přijmout</button>
+              <button class="danger" data-action="reject" data-id="${t.id}">Odmítnout / smazat</button>
+            `;
+          }
+        }
+
+        taskList.appendChild(div);
+        renderedCount++;
+      });
+
+      if (renderedCount === 0) {
+        taskList.innerHTML = `<p class="small">Žádné položky k zobrazení.</p>`;
+      }
+
+      bindTaskButtons();
+    }
+
+    function bindTaskButtons() {
+      document.querySelectorAll("[data-action='take']").forEach(btn => {
+        btn.addEventListener("click", () => takeTask(btn.dataset.id));
+      });
+
+      document.querySelectorAll("[data-action='reject']").forEach(btn => {
+        btn.addEventListener("click", () => rejectTask(btn.dataset.id));
+      });
+
+      document.querySelectorAll("[data-action='leave']").forEach(btn => {
+        btn.addEventListener("click", () => leaveTask(btn.dataset.id));
+      });
+
+      document.querySelectorAll(".star").forEach(star => {
+        star.addEventListener("click", () => {
+          const taskId = star.dataset.id;
+          const value = Number(star.dataset.value);
+          rateTask(taskId, value);
+        });
+      });
+    }
+
+    async function takeTask(taskId) {
+      try {
+        await updateDoc(doc(db, "tasks", taskId), {
+          takenByUid: currentUser.uid,
+          takenByName: currentUser.username
+        });
+      } catch (error) {
+        alert("Chyba při přijetí úkolu: " + error.message);
+      }
+    }
+
+    async function leaveTask(taskId) {
+      try {
+        await updateDoc(doc(db, "tasks", taskId), {
+          takenByUid: null,
+          takenByName: null
+        });
+      } catch (error) {
+        alert("Chyba při zrušení přijetí: " + error.message);
+      }
+    }
+
+    async function rejectTask(taskId) {
+      try {
+        await deleteDoc(doc(db, "tasks", taskId));
+      } catch (error) {
+        alert("Chyba při mazání úkolu: " + error.message);
+      }
+    }
+
+    async function rateTask(taskId, value) {
+      try {
+        await updateDoc(doc(db, "tasks", taskId), {
+          rating: value
+        });
+      } catch (error) {
+        alert("Chyba při hodnocení: " + error.message);
+      }
+    }
+
+    function renderStars(taskId, rating) {
+      let stars = "";
+      for (let i = 1; i <= 5; i++) {
+        const symbol = i <= rating ? "⭐" : "☆";
+        stars += `<span class="star" data-id="${taskId}" data-value="${i}">${symbol}</span>`;
+      }
+      stars += ` <span class="small">(${rating}/5)</span>`;
+      return stars;
+    }
+
+    function escapeHtml(text) {
+      if (text == null) return "";
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>
